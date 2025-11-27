@@ -9,54 +9,31 @@
  */
 
 
-// Forza funzioni moderne Winsock
+// Forza funzioni moderne Winsock solo su Windows
+#ifdef _WIN32
 #define _WIN32_WINNT 0x0601
-
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <errno.h>
-
-// Patch per inet_ntop mancante su MinGW
-#ifndef HAVE_INET_NTOP
-const char* inet_ntop_win(int af, const void* src, char* dst, socklen_t size) {
-    struct sockaddr_storage addr;
-    DWORD addrlen = 0;
-
-    ZeroMemory(&addr, sizeof(addr));
-
-    if (af == AF_INET) {
-        struct sockaddr_in* sin = (struct sockaddr_in*)&addr;
-        sin->sin_family = AF_INET;
-        memcpy(&sin->sin_addr, src, sizeof(struct in_addr));
-        addrlen = sizeof(struct sockaddr_in);
-    } else if (af == AF_INET6) {
-        struct sockaddr_in6* sin6 = (struct sockaddr_in6*)&addr;
-        sin6->sin6_family = AF_INET6;
-        memcpy(&sin6->sin6_addr, src, sizeof(struct in6_addr));
-        addrlen = sizeof(struct sockaddr_in6);
-    } else {
-        return NULL;
-    }
-
-    if (WSAAddressToStringA((struct sockaddr*)&addr, addrlen, NULL, dst, &size) != 0)
-        return NULL;
-
-    return dst;
-}
-#define inet_ntop inet_ntop_win
-#endif
-
-// Tipi mancanti
+#pragma comment(lib, "ws2_32.lib")
 typedef SOCKET sock_t;
-
-// Macro mancanti
 #define CLOSESOCK closesocket
+#else
+// Linux / Unix
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
+typedef int sock_t;
+#define INVALID_SOCKET (-1)
+#define CLOSESOCK close
+#endif
 
 #include "protocol.h"
 
@@ -65,32 +42,32 @@ static int recv_all(sock_t s, void* buf, size_t n) {
     size_t got = 0;
     char* p = (char*)buf;
     while (got < n) {
-        #ifdef _WIN32
-            int r = recv(s, p + got, (int)(n - got), 0);
-        #else
-            ssize_t r = recv(s, p + got, n - got, 0);
-        #endif
+#ifdef _WIN32
+        int r = recv(s, p + got, (int)(n - got), 0);
+#else
+        ssize_t r = recv(s, p + got, n - got, 0);
+#endif
         if (r <= 0) return 0;
         got += (size_t)r;
     }
     return 1;
 }
+
 static int send_all(sock_t s, const void* buf, size_t n) {
     size_t sent = 0;
     const char* p = (const char*)buf;
     while (sent < n) {
-        #ifdef _WIN32
-            int r = send(s, p + sent, (int)(n - sent), 0);
-        #else
-            ssize_t r = send(s, p + sent, n - sent, 0);
-        #endif
+#ifdef _WIN32
+        int r = send(s, p + sent, (int)(n - sent), 0);
+#else
+        ssize_t r = send(s, p + sent, n - sent, 0);
+#endif
         if (r <= 0) return 0;
         sent += (size_t)r;
     }
     return 1;
 }
 
-/* print usage and exit */
 static void usage(const char* prog) {
     fprintf(stderr, "Uso: %s [-s server] [-p port] -r \"type city\"\n", prog);
     exit(1);
@@ -130,7 +107,6 @@ int main(int argc, char* argv[]) {
     trim_inplace(request_raw);
     if (strlen(request_raw) < 1) usage(argv[0]);
 
-    /* first char = type, rest = city (may include spaces) */
     char rtype = request_raw[0];
     char city[CITY_NAME_LEN];
     memset(city, 0, sizeof(city));
@@ -143,13 +119,13 @@ int main(int argc, char* argv[]) {
         city[CITY_NAME_LEN-1] = '\0';
     }
 
-    #ifdef _WIN32
-      WSADATA wsa;
-      if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
-          fprintf(stderr, "Errore inizializzazione Winsock\n");
-          return 1;
-      }
-    #endif
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
+        fprintf(stderr, "Errore inizializzazione Winsock\n");
+        return 1;
+    }
+#endif
 
     struct addrinfo hints, *res, *p;
     memset(&hints,0,sizeof(hints));
@@ -162,25 +138,24 @@ int main(int argc, char* argv[]) {
                 gai == EAI_NONAME ? "Nome non trovato" :
                 gai == EAI_AGAIN  ? "Temporary failure" :
                 "Errore risoluzione");
-        #ifdef _WIN32
-          WSACleanup();
-        #endif
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return 1;
     }
 
     sock_t sock = INVALID_SOCKET;
     char ipstr[INET6_ADDRSTRLEN] = {0};
+
     for (p = res; p != NULL; p = p->ai_next) {
         sock = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
         if (sock == INVALID_SOCKET) continue;
-        if (connect(sock, p->ai_addr, (int)p->ai_addrlen) == 0) {
+        if (connect(sock, p->ai_addr, p->ai_addrlen) == 0) {
             void* addrptr = NULL;
             if (p->ai_family == AF_INET) {
-                struct sockaddr_in *sa = (struct sockaddr_in*)p->ai_addr;
-                addrptr = &sa->sin_addr;
+                addrptr = &((struct sockaddr_in*)p->ai_addr)->sin_addr;
             } else {
-                struct sockaddr_in6 *sa6 = (struct sockaddr_in6*)p->ai_addr;
-                addrptr = &sa6->sin6_addr;
+                addrptr = &((struct sockaddr_in6*)p->ai_addr)->sin6_addr;
             }
             inet_ntop(p->ai_family, addrptr, ipstr, sizeof(ipstr));
             break;
@@ -193,13 +168,13 @@ int main(int argc, char* argv[]) {
 
     if (sock == INVALID_SOCKET) {
         fprintf(stderr, "Errore connessione al server %s:%s\n", server, port);
-        #ifdef _WIN32
-          WSACleanup();
-        #endif
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return 1;
     }
 
-    /* Build request: 1 byte type + 64 bytes city (null-padded) = 65 bytes */
+    /* Build request: 1 byte type + 64 bytes city */
     unsigned char reqbuf[1 + CITY_NAME_LEN];
     memset(reqbuf, 0, sizeof(reqbuf));
     reqbuf[0] = (unsigned char)rtype;
@@ -208,22 +183,23 @@ int main(int argc, char* argv[]) {
     if (!send_all(sock, reqbuf, sizeof(reqbuf))) {
         fprintf(stderr, "Errore invio richiesta\n");
         CLOSESOCK(sock);
-        #ifdef _WIN32
-          WSACleanup();
-        #endif
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return 1;
     }
 
-    /* Receive response: 4 bytes status + 1 type + 4 bytes float */
+    /* Response: 4B status + 1B type + 4B float */
     unsigned char respbuf[9];
     if (!recv_all(sock, respbuf, sizeof(respbuf))) {
         fprintf(stderr, "Errore ricezione risposta\n");
         CLOSESOCK(sock);
-        #ifdef _WIN32
-          WSACleanup();
-        #endif
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return 1;
     }
+
     CLOSESOCK(sock);
 
     uint32_t net_status;
@@ -265,8 +241,8 @@ int main(int argc, char* argv[]) {
     printf("Ricevuto risultato dal server ip %s. %s\n",
            ipstr[0] ? ipstr : server, message);
 
-    #ifdef _WIN32
-      WSACleanup();
-    #endif
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return 0;
 }
