@@ -217,10 +217,10 @@ int main(int argc, char* argv[]) {
     if (status == STATUS_SUCCESS) {
         switch (resp_type) {
             case 't':
-                snprintf(message, sizeof(message), "%s: Temperatura = %.1f°C", city, value);
+                snprintf(message, sizeof(message), "%s: Temperatura = %.1fC", city, value);
                 break;
             case 'h':
-                snprintf(message, sizeof(message), "%s: Umidità = %.1f%%", city, value);
+                snprintf(message, sizeof(message), "%s: Umidita = %.1f%%", city, value);
                 break;
             case 'w':
                 snprintf(message, sizeof(message), "%s: Vento = %.1f km/h", city, value);
@@ -233,10 +233,11 @@ int main(int argc, char* argv[]) {
                 break;
         }
     } else if (status == STATUS_CITY_UNAVAILABLE) {
-        snprintf(message, sizeof(message), "Città non disponibile");
+        snprintf(message, sizeof(message), "Citta non disponibile");
     } else {
         snprintf(message, sizeof(message), "Richiesta non valida");
     }
+
 
     printf("Ricevuto risultato dal server ip %s. %s\n",
            ipstr[0] ? ipstr : server, message);
