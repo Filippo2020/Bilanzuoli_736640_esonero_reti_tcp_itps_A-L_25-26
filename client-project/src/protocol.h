@@ -24,7 +24,7 @@ typedef struct {
     float value;
 } weather_response_t;
 
-/* Status codes (host order) */
+
 #define STATUS_SUCCESS 0u
 #define STATUS_CITY_UNAVAILABLE 1u
 #define STATUS_INVALID_REQUEST 2u
