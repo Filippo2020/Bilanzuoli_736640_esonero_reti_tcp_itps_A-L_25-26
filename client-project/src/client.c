@@ -9,17 +9,14 @@
  */
 
 
-// Forza funzioni moderne Winsock solo su Windows
 #ifdef _WIN32
 #define _WIN32_WINNT 0x0601
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#pragma comment(lib, "ws2_32.lib")
 typedef SOCKET sock_t;
 #define CLOSESOCK closesocket
 #else
-// Linux / Unix
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -29,15 +26,43 @@ typedef SOCKET sock_t;
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-
 typedef int sock_t;
 #define INVALID_SOCKET (-1)
 #define CLOSESOCK close
 #endif
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "protocol.h"
 
-/* helpers to receive/send exact bytes */
+/* Implementazione inet_ntop per MinGW/Windows */
+#ifdef _WIN32
+const char* inet_ntop_win(int af, const void* src, char* dst, socklen_t size) {
+    struct sockaddr_storage addr;
+    DWORD addr_size = sizeof(addr);
+    ZeroMemory(&addr, sizeof(addr));
+
+    if (af == AF_INET) {
+        struct sockaddr_in *sa = (struct sockaddr_in *)&addr;
+        sa->sin_family = AF_INET;
+        memcpy(&sa->sin_addr, src, sizeof(struct in_addr));
+    } else if (af == AF_INET6) {
+        struct sockaddr_in6 *sa = (struct sockaddr_in6 *)&addr;
+        sa->sin6_family = AF_INET6;
+        memcpy(&sa->sin6_addr, src, sizeof(struct in6_addr));
+    } else {
+        return NULL;
+    }
+
+    if (WSAAddressToStringA((SOCKADDR*)&addr, addr_size, NULL, dst, (LPDWORD)&size) != 0)
+        return NULL;
+
+    return dst;
+}
+#endif
+
 static int recv_all(sock_t s, void* buf, size_t n) {
     size_t got = 0;
     char* p = (char*)buf;
@@ -95,6 +120,7 @@ int main(int argc, char* argv[]) {
             port = argv[i+1]; i++;
         } else if (strcmp(argv[i], "-r")==0 && i+1<argc) {
             strncpy(request_raw, argv[i+1], sizeof(request_raw)-1);
+            request_raw[sizeof(request_raw)-1] = '\0';
             have_request = 1;
             i++;
         } else {
@@ -150,14 +176,21 @@ int main(int argc, char* argv[]) {
     for (p = res; p != NULL; p = p->ai_next) {
         sock = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
         if (sock == INVALID_SOCKET) continue;
+
+        void* addrptr = NULL;
+        if (p->ai_family == AF_INET) {
+            addrptr = &((struct sockaddr_in*)p->ai_addr)->sin_addr;
+        } else {
+            addrptr = &((struct sockaddr_in6*)p->ai_addr)->sin6_addr;
+        }
+
+#ifdef _WIN32
+        inet_ntop_win(p->ai_family, addrptr, ipstr, sizeof(ipstr));
+#else
+        inet_ntop(p->ai_family, addrptr, ipstr, sizeof(ipstr));
+#endif
+
         if (connect(sock, p->ai_addr, p->ai_addrlen) == 0) {
-            void* addrptr = NULL;
-            if (p->ai_family == AF_INET) {
-                addrptr = &((struct sockaddr_in*)p->ai_addr)->sin_addr;
-            } else {
-                addrptr = &((struct sockaddr_in6*)p->ai_addr)->sin6_addr;
-            }
-            inet_ntop(p->ai_family, addrptr, ipstr, sizeof(ipstr));
             break;
         }
         CLOSESOCK(sock);
@@ -174,11 +207,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    /* Build request: 1 byte type + 64 bytes city */
+    /* Build request: 1 byte type + CITY_NAME_LEN bytes city */
     unsigned char reqbuf[1 + CITY_NAME_LEN];
     memset(reqbuf, 0, sizeof(reqbuf));
     reqbuf[0] = (unsigned char)rtype;
-    strncpy((char*)&reqbuf[1], city, CITY_NAME_LEN-1);
+    strncpy((char*)&reqbuf[1], city, CITY_NAME_LEN - 1);
+    ((char*)&reqbuf[1])[CITY_NAME_LEN - 1] = '\0';
 
     if (!send_all(sock, reqbuf, sizeof(reqbuf))) {
         fprintf(stderr, "Errore invio richiesta\n");
@@ -189,7 +223,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    /* Response: 4B status + 1B type + 4B float */
     unsigned char respbuf[9];
     if (!recv_all(sock, respbuf, sizeof(respbuf))) {
         fprintf(stderr, "Errore ricezione risposta\n");
@@ -237,7 +270,6 @@ int main(int argc, char* argv[]) {
     } else {
         snprintf(message, sizeof(message), "Richiesta non valida");
     }
-
 
     printf("Ricevuto risultato dal server ip %s. %s\n",
            ipstr[0] ? ipstr : server, message);
