@@ -11,6 +11,23 @@
 
 #include "protocol.h"
 
+#if defined(_WIN32)
+#ifndef inet_ntop
+// Wrapper inet_ntop per Windows MinGW
+const char* inet_ntop(int af, const void* src, char* dst, socklen_t size) {
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = af;
+    memcpy(&sa.sin_addr, src, sizeof(struct in_addr));
+    DWORD dst_len = (DWORD)size;
+    if (WSAAddressToStringA((struct sockaddr*)&sa, sizeof(sa), NULL, dst, &dst_len) != 0) {
+        return NULL;
+    }
+    return dst;
+}
+#endif
+#endif
+
 int main(int argc, char *argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -36,7 +53,7 @@ int main(int argc, char *argv[]) {
             if (type_len != 1) { printf("Errore: il tipo deve essere un singolo carattere.\n"); return -1; }
             req.type = input_str[0];
             char* city_ptr = space_ptr + 1;
-            if (strlen(city_ptr) >= CITY_LEN) { printf("Errore: nome citta' troppo lungo.\n"); return -1; }
+            if (strlen(city_ptr) >= CITY_LEN) { printf("Errore: nome città troppo lungo.\n"); return -1; }
             strncpy(req.city, city_ptr, CITY_LEN - 1);
             req.city[CITY_LEN - 1] = '\0';
             request_provided = 1;
@@ -49,7 +66,7 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-#if defined _WIN32
+#if defined(_WIN32)
     WSADATA wsa_data;
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) return -1;
 #endif
@@ -64,7 +81,7 @@ int main(int argc, char *argv[]) {
 
     if (getaddrinfo(server_host, port_str, &hints, &res) != 0) {
         printf("Errore risoluzione DNS per %s\n", server_host);
-#if defined _WIN32
+#if defined(_WIN32)
         WSACleanup();
 #endif
         return -1;
@@ -72,16 +89,23 @@ int main(int argc, char *argv[]) {
 
     char resolved_ip[INET_ADDRSTRLEN];
     char resolved_name[NI_MAXHOST];
-
     struct sockaddr_in* saddr = (struct sockaddr_in*)res->ai_addr;
-    inet_ntop(AF_INET, &(saddr->sin_addr), resolved_ip, INET_ADDRSTRLEN);
 
-    if (getnameinfo((struct sockaddr*)saddr, sizeof(struct sockaddr_in), resolved_name, sizeof(resolved_name), NULL, 0, 0) != 0) {
+    if (!inet_ntop(AF_INET, &(saddr->sin_addr), resolved_ip, INET_ADDRSTRLEN))
+        strcpy(resolved_ip, "IP non risolto");
+
+    if (getnameinfo((struct sockaddr*)saddr, sizeof(struct sockaddr_in),
+                    resolved_name, sizeof(resolved_name), NULL, 0, 0) != 0) {
         strcpy(resolved_name, resolved_ip);
     }
 
+#if defined(_WIN32)
+    SOCKET client_socket = socket(PF_INET, SOCK_DGRAM, 0);
+    if (client_socket == INVALID_SOCKET) { perror("Socket error"); freeaddrinfo(res); WSACleanup(); return -1; }
+#else
     int client_socket = socket(PF_INET, SOCK_DGRAM, 0);
     if (client_socket < 0) { perror("Socket error"); freeaddrinfo(res); return -1; }
+#endif
 
     char send_buffer[sizeof(char) + CITY_LEN];
     int offset = 0;
@@ -90,40 +114,52 @@ int main(int argc, char *argv[]) {
 
     ssize_t sent_bytes = sendto(client_socket, send_buffer, offset, 0, res->ai_addr, res->ai_addrlen);
     if (sent_bytes != offset) {
-        printf("Errore invio.\n"); close(client_socket); freeaddrinfo(res); return -1;
+        printf("Errore invio.\n");
+#if defined(_WIN32)
+        closesocket(client_socket); WSACleanup();
+#else
+        close(client_socket);
+#endif
+        freeaddrinfo(res);
+        return -1;
     }
 
     char recv_buffer[512];
     struct sockaddr_in from_addr;
     socklen_t from_len = sizeof(from_addr);
 
-    ssize_t received_bytes = recvfrom(client_socket, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&from_addr, &from_len);
+    ssize_t received_bytes = recvfrom(client_socket, recv_buffer, sizeof(recv_buffer), 0,
+                                      (struct sockaddr*)&from_addr, &from_len);
     if (received_bytes <= 0) {
-        printf("Errore ricezione o timeout.\n"); close(client_socket); freeaddrinfo(res); return -1;
+        printf("Errore ricezione o timeout.\n");
+#if defined(_WIN32)
+        closesocket(client_socket); WSACleanup();
+#else
+        close(client_socket);
+#endif
+        freeaddrinfo(res);
+        return -1;
     }
 
     weather_response_t resp;
     offset = 0;
 
     uint32_t net_status;
-    if (received_bytes < (ssize_t)sizeof(uint32_t)) { printf("Risposta corrotta.\n"); return -1; }
     memcpy(&net_status, recv_buffer + offset, sizeof(uint32_t));
     resp.status = ntohl(net_status);
     offset += sizeof(uint32_t);
 
-    if (received_bytes < (ssize_t)(offset + sizeof(char))) { printf("Risposta corrotta.\n"); return -1; }
     memcpy(&resp.type, recv_buffer + offset, sizeof(char));
     offset += sizeof(char);
 
-    if (received_bytes < (ssize_t)(offset + sizeof(float))) { printf("Risposta corrotta.\n"); return -1; }
     uint32_t net_value;
     memcpy(&net_value, recv_buffer + offset, sizeof(uint32_t));
     net_value = ntohl(net_value);
     memcpy(&resp.value, &net_value, sizeof(float));
 
-    printf("Ricevuto risultato dal server %s (ip %s). ", resolved_name, resolved_ip);
+    printf("Ricevuto risultato dal server %s (IP %s). ", resolved_name, resolved_ip);
 
-    if (resp.status == 1) printf("Citta' non disponibile\n");
+    if (resp.status == 1) printf("Città non disponibile\n");
     else if (resp.status == 2) printf("Richiesta non valida\n");
     else if (resp.status == 0) {
         char formatted_city[CITY_LEN];
@@ -131,7 +167,7 @@ int main(int argc, char *argv[]) {
         if (formatted_city[0] >= 'a' && formatted_city[0] <= 'z') formatted_city[0] -= ('a' - 'A');
         printf("%s: ", formatted_city);
         switch (resp.type) {
-            case 't': printf("Temperatura = %.1f�C\n", resp.value); break;
+            case 't': printf("Temperatura = %.1f°C\n", resp.value); break;
             case 'h': printf("Umidita' = %.1f%%\n", resp.value); break;
             case 'w': printf("Vento = %.1f km/h\n", resp.value); break;
             case 'p': printf("Pressione = %.1f hPa\n", resp.value); break;
@@ -140,9 +176,11 @@ int main(int argc, char *argv[]) {
     }
 
     freeaddrinfo(res);
+#if defined(_WIN32)
+    closesocket(client_socket); WSACleanup();
+#else
     close(client_socket);
-#if defined _WIN32
-    WSACleanup();
 #endif
+
     return 0;
 }

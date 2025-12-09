@@ -10,6 +10,24 @@
 
 #include "protocol.h"
 
+#if defined(_WIN32)
+#ifndef inet_ntop
+// Wrapper inet_ntop per Windows MinGW
+const char* inet_ntop(int af, const void* src, char* dst, socklen_t size) {
+    struct sockaddr_in sa;
+    ZeroMemory(&sa, sizeof(sa));
+    sa.sin_family = af;
+    memcpy(&sa.sin_addr, src, sizeof(struct in_addr));
+
+    DWORD dst_len = (DWORD)size;
+    if (WSAAddressToStringA((struct sockaddr*)&sa, sizeof(sa), NULL, dst, &dst_len) != 0) {
+        return NULL;
+    }
+    return dst;
+}
+#endif
+#endif
+
 float get_random_float(float min, float max) {
     return min + (rand() / (float)RAND_MAX) * (max - min);
 }
@@ -40,7 +58,7 @@ int main(int argc, char *argv[]) {
     }
     printf("Server avviato sulla porta %d\n", port);
 
-#if defined _WIN32
+#if defined(_WIN32)
     WSADATA wsa_data;
     if (WSAStartup(MAKEWORD(2,2), &wsa_data) != 0) {
         printf("Errore critico: WSAStartup fallita.\n");
@@ -49,8 +67,11 @@ int main(int argc, char *argv[]) {
 #endif
 
     int server_socket = socket(PF_INET, SOCK_DGRAM, 0);
-    if (server_socket < 0) {
+    if (server_socket == INVALID_SOCKET) {
         perror("Impossibile creare il socket");
+#if defined(_WIN32)
+        WSACleanup();
+#endif
         return -1;
     }
 
@@ -63,6 +84,9 @@ int main(int argc, char *argv[]) {
     if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         printf("Errore Bind. Porta occupata?\n");
         close(server_socket);
+#if defined(_WIN32)
+        WSACleanup();
+#endif
         return -1;
     }
 
@@ -80,7 +104,8 @@ int main(int argc, char *argv[]) {
         char client_ip[INET_ADDRSTRLEN];
         char client_host[NI_MAXHOST];
 
-        inet_ntop(AF_INET, &(client_addr.sin_addr), client_ip, INET_ADDRSTRLEN);
+        if (!inet_ntop(AF_INET, &(client_addr.sin_addr), client_ip, INET_ADDRSTRLEN))
+            strcpy(client_ip, "IP non risolto");
 
         if (getnameinfo((struct sockaddr*)&client_addr, client_len,
                         client_host, sizeof(client_host), NULL, 0, 0) != 0) {
@@ -153,7 +178,7 @@ int main(int argc, char *argv[]) {
     }
 
     close(server_socket);
-#if defined _WIN32
+#if defined(_WIN32)
     WSACleanup();
 #endif
 
